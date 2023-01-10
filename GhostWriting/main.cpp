@@ -170,9 +170,11 @@ BOOL FindMOVRETAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 
 				Ghost->MOVRETAddress = NTDLLCode + i;
 
-				printf("[+] Found MOV RET Opcode:\n");
+#ifdef DEBUG
+				printf("[D] Found MOV RET Opcode:\n");
 				for (unsigned int k = 0; k <= j; k++)
-					_tprintf(_T("[+] 0x%p:\t%hs\t\t%hs\n"), NTDLLCode + i, Insn[k].mnemonic, Insn[k].op_str);
+					_tprintf(_T("[D] 0x%p:\t%hs\t\t%hs\n"), NTDLLCode + i, Insn[k].mnemonic, Insn[k].op_str);
+#endif // DEBUG
 
 				// 找到符合条件的 MOVRETAddress 后直接返回
 				cs_free(Insn, Count);
@@ -239,6 +241,7 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 {
 	SetThreadContext(Thread, ThreadContext);
 
+#ifdef DEBUG
 	_tprintf(_T("\n"));
 	_tprintf(_T("[D] After inject:\n"));
 	_tprintf(_T("[D] Rbx = %llX\n"), ThreadContext->Rbx);
@@ -246,6 +249,7 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 	_tprintf(_T("[D] Rdi = %llX\n"), ThreadContext->Rdi);
 	_tprintf(_T("[D] Rsp = %llX\n"), ThreadContext->Rsp);
 	_tprintf(_T("[D] Rip = %llX\n"), ThreadContext->Rip);
+#endif // DEBUG
 
 	// 唤醒线程
 	PostMessage(Window, WM_USER, 0, 0);
@@ -586,7 +590,7 @@ int _tmain(int argc, TCHAR* argv[])
 	}
 
 	DWORD ThreadId = GetWindowThreadProcessId(Window, NULL);
-	_tprintf(_T("[D] ThreadId = %d\n"), ThreadId);
+	_tprintf(_T("[+] ThreadId = %d\n"), ThreadId);
 
 	HANDLE Thread = OpenThread(THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, ThreadId);
 	if (Thread == NULL) {
@@ -602,6 +606,7 @@ int _tmain(int argc, TCHAR* argv[])
 	ThreadContext.ContextFlags = CONTEXT_FULL;
 	GetThreadContext(Thread, &ThreadContext);
 
+#ifdef DEBUG
 	_tprintf(_T("\n"));
 	_tprintf(_T("[D] Before inject:\n"));
 	_tprintf(_T("[D] Rbx = %llX\n"), ThreadContext.Rbx);
@@ -609,6 +614,7 @@ int _tmain(int argc, TCHAR* argv[])
 	_tprintf(_T("[D] Rdi = %llX\n"), ThreadContext.Rdi);
 	_tprintf(_T("[D] Rsp = %llX\n"), ThreadContext.Rsp);
 	_tprintf(_T("[D] Rip = %llX\n"), ThreadContext.Rip);
+#endif // DEBUG
 
 	// 开始注入，约定：注入完成后线程必须处于暂停状态
 	if (Inject(Thread, Window, &Ghost, NtProtectVirtualMemory) == TRUE) {
