@@ -516,7 +516,7 @@ int _tmain(int argc, TCHAR* argv[])
 	// 获取ntdll模块
 	HMODULE NTDLLBase = GetModuleHandle(_T("ntdll.dll"));
 	if (NTDLLBase != NULL) {
-		_tprintf(_T("[+] NTDLLBase = %p\n"), NTDLLBase);
+		_tprintf(_T("[+] NTDLL Base = %p\n"), NTDLLBase);
 	}
 	else{
 		_tprintf(_T("[x] Failed to get ntdll.dll module\n"));
@@ -565,7 +565,7 @@ int _tmain(int argc, TCHAR* argv[])
 	}
 
 	DWORD ThreadId = GetWindowThreadProcessId(Window, NULL);
-	_tprintf(_T("[+] ThreadId = %d\n"), ThreadId);
+	_tprintf(_T("[+] Thread Id = %d\n"), ThreadId);
 
 	HANDLE Thread = OpenThread(THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, ThreadId);
 	if (Thread == NULL) {
@@ -593,10 +593,10 @@ int _tmain(int argc, TCHAR* argv[])
 
 	// 开始注入，约定：注入完成后线程必须处于暂停状态
 	if (Inject(Thread, Window, &Ghost, NtProtectVirtualMemory) == TRUE) {
-		_tprintf(_T("[+] Inject success\n"));
+		_tprintf(_T("[+] Success\n"));
 	}
 	else {
-		_tprintf(_T("[-] Inject failed\n"));
+		_tprintf(_T("[-] Failed\n"));
 	}
 
 	// 还原线程
