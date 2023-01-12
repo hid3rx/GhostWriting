@@ -18,57 +18,12 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="Zydis\Zydis.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\capstone\arm.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\arm64.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\capstone.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\evm.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\m68k.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\m680x.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\mips.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\platform.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\ppc.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\sparc.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\systemz.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\tms320c64x.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\x86.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\capstone\xcore.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\windowsce\intrin.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\windowsce\stdint.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="include\platform.h">
+    <ClInclude Include="Zydis\Zydis.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
