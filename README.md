@@ -18,7 +18,7 @@ ADD RSP, 0x20  # 可有可无
 RET   # 必须存在
 ```
 
-四、在完成上述工作后，具备了向 explorer.exe 主线程的栈中写入任意数据、调用任意API的能力
+四、在完成上述工作后，具备了向 explorer.exe 主线程的栈中写入任意数据、调用任意API的能力（通过 `SetThreadContext` 函数）
 
 五、以上面提供的gadgets代码为例，写入数据：
 
