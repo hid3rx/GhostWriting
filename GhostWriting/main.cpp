@@ -1,7 +1,7 @@
 #include <Windows.h>
 #include <stdio.h>
 #include <tchar.h>
-#include "Zydis/Zydis.h"
+#include <Zydis/Zydis.h>
 
 
 #ifndef _DEBUG
@@ -48,8 +48,8 @@ struct GW {
 	INT64 RspCompensation; // RSP²¹³¥
 };
 
-GW::REG Translate(ZydisRegister Reg) {
-
+GW::REG Translate(ZydisRegister Reg)
+{
 	switch (Reg)
 	{
 	case ZYDIS_REGISTER_RBX:
@@ -63,8 +63,8 @@ GW::REG Translate(ZydisRegister Reg) {
 	}
 }
 
-DWORD64* Translate(GW::REG Reg, CONTEXT* ThreadContext) {
-
+DWORD64* Translate(GW::REG Reg, CONTEXT* ThreadContext)
+{
 	switch (Reg)
 	{
 	case GW::Rbx:
